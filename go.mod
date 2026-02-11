@@ -1,4 +1,4 @@
-module github.com/gmbyapa/kstream/v2
+module github.com/YasiruR/kstream/v2
 
 go 1.22.4
 
