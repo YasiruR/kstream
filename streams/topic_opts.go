@@ -1,6 +1,6 @@
 package streams
 
-import "github.com/gmbyapa/kstream/v2/streams/topology"
+import "github.com/YasiruR/kstream/v2/streams/topology"
 
 type AutoTopicOpts struct {
 	nameFormatter  TopicNameFormatter

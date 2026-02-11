@@ -2,8 +2,8 @@ package stores
 
 import (
 	"context"
-	"github.com/gmbyapa/kstream/v2/backend"
-	"github.com/gmbyapa/kstream/v2/pkg/errors"
+	"github.com/YasiruR/kstream/v2/backend"
+	"github.com/YasiruR/kstream/v2/pkg/errors"
 )
 
 type indexIterator struct {

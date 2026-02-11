@@ -2,8 +2,8 @@ package tasks
 
 import (
 	"context"
-	"github.com/gmbyapa/kstream/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/pkg/async"
+	"github.com/YasiruR/kstream/v2/kafka"
+	"github.com/YasiruR/kstream/v2/pkg/async"
 	"github.com/tryfix/metrics/v2"
 	"sync"
 	"time"

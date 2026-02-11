@@ -3,7 +3,7 @@ package mocks
 import (
 	"errors"
 	"github.com/IBM/sarama"
-	"github.com/gmbyapa/kstream/v2/kafka"
+	"github.com/YasiruR/kstream/v2/kafka"
 	"sync"
 )
 

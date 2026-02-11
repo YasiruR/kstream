@@ -1,7 +1,7 @@
 package streams
 
 import (
-	"github.com/gmbyapa/kstream/v2/streams/stores"
+	"github.com/YasiruR/kstream/v2/streams/stores"
 )
 
 type GlobalStoreBuilderWrapper struct {

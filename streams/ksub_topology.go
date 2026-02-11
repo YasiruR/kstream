@@ -2,8 +2,8 @@ package streams
 
 import (
 	"fmt"
-	"github.com/gmbyapa/kstream/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/streams/topology"
+	"github.com/YasiruR/kstream/v2/kafka"
+	"github.com/YasiruR/kstream/v2/streams/topology"
 )
 
 type KSubTopology struct {

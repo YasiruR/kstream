@@ -10,9 +10,9 @@ package librd
 import (
 	"context"
 	"fmt"
+	"github.com/YasiruR/kstream/v2/kafka"
+	"github.com/YasiruR/kstream/v2/pkg/errors"
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/pkg/errors"
 	"github.com/tryfix/log"
 	"strings"
 	"time"

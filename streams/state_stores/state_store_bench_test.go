@@ -3,10 +3,10 @@ package state_stores
 import (
 	"context"
 	"fmt"
-	"github.com/gmbyapa/kstream/v2/backend"
-	"github.com/gmbyapa/kstream/v2/backend/mock"
-	"github.com/gmbyapa/kstream/v2/streams/encoding"
-	"github.com/gmbyapa/kstream/v2/streams/stores"
+	"github.com/YasiruR/kstream/v2/backend"
+	"github.com/YasiruR/kstream/v2/backend/mock"
+	"github.com/YasiruR/kstream/v2/streams/encoding"
+	"github.com/YasiruR/kstream/v2/streams/stores"
 	"testing"
 )
 

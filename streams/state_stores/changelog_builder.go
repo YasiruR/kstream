@@ -5,11 +5,11 @@ import (
 	"github.com/tryfix/metrics/v2"
 	"sync"
 
-	"github.com/gmbyapa/kstream/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/pkg/errors"
-	"github.com/gmbyapa/kstream/v2/streams/encoding"
-	"github.com/gmbyapa/kstream/v2/streams/stores"
-	"github.com/gmbyapa/kstream/v2/streams/topology"
+	"github.com/YasiruR/kstream/v2/kafka"
+	"github.com/YasiruR/kstream/v2/pkg/errors"
+	"github.com/YasiruR/kstream/v2/streams/encoding"
+	"github.com/YasiruR/kstream/v2/streams/stores"
+	"github.com/YasiruR/kstream/v2/streams/topology"
 	logger "github.com/tryfix/log"
 )
 

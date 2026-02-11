@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/gmbyapa/kstream/v2/streams/encoding"
+	"github.com/YasiruR/kstream/v2/streams/encoding"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	"github.com/tryfix/log"

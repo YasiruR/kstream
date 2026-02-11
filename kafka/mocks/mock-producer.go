@@ -2,8 +2,8 @@ package mocks
 
 import (
 	"context"
+	"github.com/YasiruR/kstream/v2/kafka"
 	librd "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/kafka"
 	"hash"
 	"hash/fnv"
 )

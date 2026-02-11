@@ -1,9 +1,9 @@
 package librd
 
 import (
+	"github.com/YasiruR/kstream/v2/kafka"
+	"github.com/YasiruR/kstream/v2/pkg/errors"
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/kafka"
-	"github.com/gmbyapa/kstream/v2/pkg/errors"
 )
 
 type assignment struct {
