@@ -1,11 +1,12 @@
 package librd
 
 import (
+	"strings"
+
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/pkg/errors"
 	"github.com/tryfix/log"
-	"strings"
 )
 
 type ProducerConfig struct {
@@ -52,7 +53,9 @@ func (conf *ProducerConfig) setUp() error {
 		// For transactional producers, delivery success is
 		// acknowledged by producer batch commit, so we don't need
 		// to listen to individual delivery reports
-		if err := conf.Librd.SetKey(`go.delivery.reports`, false); err != nil {
+
+		// Updated to true
+		if err := conf.Librd.SetKey(`go.delivery.reports`, true); err != nil {
 			panic(err)
 		}
 
