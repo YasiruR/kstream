@@ -107,6 +107,8 @@ type GroupConsumerConfig struct {
 			Interval time.Duration // Equivalent to auto.commit.interval.ms  in java consumer
 		}
 	}
+	// Interceptor is called for each consumed record.
+	Interceptor ConsumerInterceptor
 }
 
 func (conf *GroupConsumerConfig) Copy() *GroupConsumerConfig {
@@ -114,6 +116,7 @@ func (conf *GroupConsumerConfig) Copy() *GroupConsumerConfig {
 		ConsumerConfig: conf.ConsumerConfig.Copy(),
 		GroupId:        conf.GroupId,
 		Offsets:        conf.Offsets,
+		Interceptor:    conf.Interceptor,
 	}
 }
 

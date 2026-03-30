@@ -3,9 +3,10 @@ package tasks
 import (
 	"context"
 	"fmt"
-	"github.com/gmbyapa/kstream/v2/pkg/errors"
 	"sync"
 	"time"
+
+	"github.com/gmbyapa/kstream/v2/pkg/errors"
 
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/pkg/async"
@@ -33,8 +34,10 @@ func (ctx TaskContext) TaskID() string {
 }
 
 type taskOptions struct {
-	buffer               BufferConfig
-	failedMessageHandler FailedMessageHandler
+	buffer                 BufferConfig
+	failedMessageHandler   FailedMessageHandler
+	processorInterceptor   topology.ProcessorInterceptor
+	taskInterceptorBuilder topology.TaskInterceptorBuilder
 }
 
 func (tOpts *taskOptions) setDefault() {
@@ -67,6 +70,12 @@ func WithBufferSize(size int) TaskOpt {
 func WithFailedMessageHandler(handler FailedMessageHandler) TaskOpt {
 	return func(options *taskOptions) {
 		options.failedMessageHandler = handler
+	}
+}
+
+func WithTaskInterceptorBuilder(builder topology.TaskInterceptorBuilder) TaskOpt {
+	return func(options *taskOptions) {
+		options.taskInterceptorBuilder = builder
 	}
 }
 
@@ -234,12 +243,22 @@ func (t *task) Ready() error {
 func (t *task) process(record *Record) error {
 	defer func(since time.Time) {
 		t.metrics.processLatencyMicroseconds.Observe(float64(time.Since(since).Microseconds()),
-			map[string]string{`topic`: record.Topic()})
+			map[string]string{`topic`: record.Topic()}, metrics.WithContext(record.Ctx()))
 	}(time.Now())
 
-	ctx := TaskContext{context.WithValue(topology.NewRecordContext(record), &recordContextTaskIDKey, t.ID().String())}
-	_, _, _, err := t.subTopology.Source(record.Topic()).
-		Run(ctx, record.Key(), record.Value())
+	coreProcess := func(rec kafka.Record) error {
+		ctx := TaskContext{context.WithValue(topology.NewRecordContext(rec), &recordContextTaskIDKey, t.ID().String())}
+		_, _, _, err := t.subTopology.Source(rec.Topic()).Run(ctx, rec.Key(), rec.Value())
+		return err
+	}
+
+	var err error
+	if t.options.processorInterceptor != nil {
+		err = t.options.processorInterceptor.OnProcess(record, coreProcess)
+	} else {
+		err = coreProcess(record)
+	}
+
 	if err != nil {
 		// if this is a kafka producer error, return it(will be retried), otherwise ignore and exclude from
 		// re-processing(only the kafka errors can be retried here)
@@ -256,7 +275,7 @@ func (t *task) process(record *Record) error {
 		t.options.failedMessageHandler(err, record)
 		record.ignore = true
 
-		t.logger.ErrorContext(ctx, fmt.Sprintf(`record %s process failed due to %s`, record, err))
+		t.logger.ErrorContext(record.Ctx(), fmt.Sprintf(`record %s process failed due to %s`, record, err))
 
 		return err
 	}

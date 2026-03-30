@@ -10,13 +10,14 @@ package librd
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
+
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/pkg/errors"
 	"github.com/tryfix/log"
 	"github.com/tryfix/metrics/v2"
-	"sync"
-	"time"
 )
 
 const (
@@ -217,7 +218,7 @@ func (p *librdProducer) ProduceSync(ctx context.Context, message kafka.Record) (
 
 	p.metrics.produceLatency.Observe(float64(time.Since(kMessage.Timestamp).Nanoseconds()/1e3), map[string]string{
 		`topic`: *dmSg.TopicPartition.Topic,
-	})
+	}, metrics.WithContext(ctx))
 
 	p.config.Logger.DebugContext(ctx, fmt.Sprintf("Delivered message to topic %s[%d]@%d",
 		message.Topic(), dmSg.TopicPartition.Partition, dmSg.TopicPartition.Offset))

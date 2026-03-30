@@ -10,8 +10,11 @@ package librd
 import (
 	"context"
 	"fmt"
+
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/kafka"
+	"github.com/tryfix/metrics/v2"
+
 	"time"
 )
 
@@ -36,7 +39,7 @@ type librdTxProducer struct {
 
 func (p *librdTxProducer) InitTransactions(ctx context.Context) error {
 	defer func(begin time.Time) {
-		p.metrics.transactions.initLatency.Observe(float64(time.Since(begin).Microseconds()), nil)
+		p.metrics.transactions.initLatency.Observe(float64(time.Since(begin).Microseconds()), nil, metrics.WithContext(ctx))
 	}(time.Now())
 
 	if err := p.librdProducer.baseProducer.InitTransactions(ctx); err != nil {
@@ -64,7 +67,7 @@ func (p *librdTxProducer) BeginTransaction() error {
 
 func (p *librdTxProducer) CommitTransaction(ctx context.Context) error {
 	defer func(begin time.Time) {
-		p.metrics.transactions.commitLatency.Observe(float64(time.Since(begin).Microseconds()), nil)
+		p.metrics.transactions.commitLatency.Observe(float64(time.Since(begin).Microseconds()), nil, metrics.WithContext(ctx))
 	}(time.Now())
 
 	defer p.resetState()
@@ -112,7 +115,7 @@ func (p *librdTxProducer) AbortTransaction(ctx context.Context) error {
 	defer p.resetState()
 
 	defer func(begin time.Time) {
-		p.metrics.transactions.abortLatency.Observe(float64(time.Since(begin).Microseconds()), nil)
+		p.metrics.transactions.abortLatency.Observe(float64(time.Since(begin).Microseconds()), nil, metrics.WithContext(ctx))
 	}(time.Now())
 
 	if err := p.librdProducer.baseProducer.AbortTransaction(ctx); err != nil && err.(librdKafka.Error).Code() != librdKafka.ErrState {
@@ -134,7 +137,7 @@ func (p *librdTxProducer) ProduceAsync(ctx context.Context, message kafka.Record
 	defer func(begin time.Time) {
 		p.metrics.produceLatency.Observe(float64(time.Since(begin).Microseconds()), map[string]string{
 			`topic`: message.Topic(),
-		})
+		}, metrics.WithContext(ctx))
 	}(time.Now())
 
 	if !p.txBegin {
@@ -160,7 +163,7 @@ func (p *librdTxProducer) ProduceAsync(ctx context.Context, message kafka.Record
 
 func (p *librdTxProducer) handleTxError(ctx context.Context, err error, reason string, retry func() error) error {
 	p.config.Logger.WarnContext(ctx, fmt.Sprintf(`Retring transaction. Reason: %s, Error %s`, reason, err))
-	p.metrics.produceErrors.Count(1, map[string]string{`error`: fmt.Sprint(err)})
+	p.metrics.produceErrors.Count(1, map[string]string{`error`: fmt.Sprint(err)}, metrics.WithContext(ctx))
 
 	librdErr := err.(librdKafka.Error)
 

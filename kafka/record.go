@@ -16,6 +16,8 @@ type RecordMeta struct {
 
 type Record interface {
 	Ctx() context.Context
+	// WithCtx returns a copy of the record with the given context.
+	WithCtx(ctx context.Context) Record
 	Key() []byte
 	Value() []byte
 	Topic() string
