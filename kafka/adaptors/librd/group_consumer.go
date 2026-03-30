@@ -3,13 +3,14 @@ package librd
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
+
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/pkg/errors"
 	"github.com/tryfix/log"
 	"github.com/tryfix/metrics/v2"
-	"sync"
-	"time"
 )
 
 const (
@@ -171,12 +172,18 @@ MAIN:
 					record.ctx = g.config.ContextExtractor(record)
 				}
 
-				g.config.Logger.DebugContext(record.ctx, fmt.Sprintf(`Message %s with key (%s) received in %s`,
-					record, record.Key(), t))
+				// Apply consumer interceptor
+				var rec kafka.Record = record
+				if g.config.Interceptor != nil {
+					rec = g.config.Interceptor.OnConsume(record)
+				}
+
+				g.config.Logger.DebugContext(rec.Ctx(), fmt.Sprintf(`Message %s with key (%s) received in %s`,
+					rec, rec.Key(), t))
 
 				g.metrics.endToEndLatency.Observe(float64(t), map[string]string{
-					`topic_partition`: fmt.Sprintf(`%s_%d`, record.Topic(), record.Partition()),
-				})
+					`topic_partition`: fmt.Sprintf(`%s_%d`, rec.Topic(), rec.Partition()),
+				}, metrics.WithContext(record.ctx))
 
 				pId := kafka.TopicPartition{
 					Topic:     *e.TopicPartition.Topic,
@@ -188,7 +195,7 @@ MAIN:
 					panic(`assignment does not exist`)
 				}
 
-				assigmnt.(chan kafka.Record) <- record
+				assigmnt.(chan kafka.Record) <- rec
 
 			case librdKafka.PartitionEOF:
 				g.config.Logger.Info(fmt.Sprintf(`Partition end %s`, e))

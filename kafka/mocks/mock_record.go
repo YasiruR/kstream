@@ -50,6 +50,11 @@ func (r *Record) Ctx() context.Context {
 	return r.MCtx
 }
 
+func (r *Record) WithCtx(ctx context.Context) kafka.Record {
+	r.MCtx = ctx
+	return r
+}
+
 func (r *Record) String() string {
 	return fmt.Sprint(fmt.Sprintf(`%s[%d]@%d`, r.Topic(), r.Partition(), r.Offset()))
 }

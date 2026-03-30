@@ -95,11 +95,14 @@ func (t *taskManager) addTask(ctx topology.BuilderContext, consumerID string, id
 		return nil, errors.Wrap(err, `task build failed`)
 	}
 
+	rawProducer := producer.(kafka.TransactionalProducer)
+	sp := &streamProducer{TransactionalProducer: rawProducer}
+
 	topologyCtx := topology.NewSubTopologyContext(
 		context.Background(),
 		id.Partition(),
 		ctx,
-		producer,
+		sp,
 		t.partitionConsumer,
 		logger,
 		t.topicConfigs,
@@ -115,6 +118,13 @@ func (t *taskManager) addTask(ctx topology.BuilderContext, consumerID string, id
 		t.logger.ErrorContext(record.Ctx(), fmt.Sprintf(`Message %s failed due to %s`, record, err))
 	}
 	taskOpts.apply(t.taskOpts...)
+
+	// Build task interceptor and wire OnProduce to streamProducer, OnProcess to task
+	if taskOpts.taskInterceptorBuilder != nil {
+		interceptor := taskOpts.taskInterceptorBuilder(rawProducer)
+		sp.interceptor = interceptor                // wire OnProduce
+		taskOpts.processorInterceptor = interceptor // wire OnProcess
+	}
 
 	tsk := &task{
 		id:                    id,
