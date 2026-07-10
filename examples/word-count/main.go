@@ -4,17 +4,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"os"
-	"os/signal"
-	"strings"
-	"time"
-
 	"github.com/bxcodec/faker/v3"
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/kafka/adaptors/librd"
 	"github.com/gmbyapa/kstream/v2/streams"
 	"github.com/gmbyapa/kstream/v2/streams/encoding"
 	"github.com/tryfix/log"
+	"os"
+	"os/signal"
+	"strings"
+	"time"
 )
 
 var bootstrapServers = flag.String(`bootstrap-servers`, `localhost:9092`,

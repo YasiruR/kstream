@@ -30,7 +30,30 @@ const (
 	PartitionerConsistentFNV1aRandom   kafka.PartitionerType = `fnv1a_random`
 )
 
-type librdProducer struct {
+type DeliveryReport struct {
+	librdReport *librdKafka.Message
+}
+
+func (d DeliveryReport) TopicPartition() kafka.TopicPartition {
+	return kafka.TopicPartition{
+		Topic:     *d.librdReport.TopicPartition.Topic,
+		Partition: d.librdReport.TopicPartition.Partition,
+	}
+}
+
+func (d DeliveryReport) Offset() kafka.Offset {
+	return kafka.Offset(d.librdReport.TopicPartition.Offset)
+}
+
+func (d DeliveryReport) Error() error {
+	return d.librdReport.TopicPartition.Error
+}
+
+func (d DeliveryReport) Delivered() bool {
+	return d.librdReport.TopicPartition.Error == nil
+}
+
+type Producer struct {
 	config       *ProducerConfig
 	baseProducer *librdKafka.Producer
 
@@ -45,6 +68,9 @@ type librdProducer struct {
 		produceErrors metrics.Counter
 	}
 
+	logsChannelClosed chan struct{}
+	eventsChanClosed  chan struct{}
+
 	partitionCounts *sync.Map
 }
 
@@ -52,10 +78,58 @@ type producerProvider struct {
 	config *ProducerConfig
 }
 
+// NewProducerProvider creates a new instance of kafka.ProducerProvider initialized with the provided ProducerConfig.
+//
+// The returned ProducerProvider can be used to create producer builders that will generate Kafka producers
+// with the specified configuration. This factory pattern allows for flexible producer creation with
+// configuration overrides at build time.
+//
+// Parameters:
+//   - config: A pointer to ProducerConfig containing the base configuration for producers created by this provider.
+//     This includes settings like bootstrap servers, transactional parameters, and librdkafka-specific options.
+//
+// Returns:
+//   - kafka.ProducerProvider: An implementation of the ProducerProvider interface that encapsulates the producer
+//     creation logic using the librdkafka adapter.
+//
+// Example:
+//
+//	config := librd.NewProducerConfig()
+//	config.BootstrapServers = []string{"localhost:9092"}
+//	provider := librd.NewProducerProvider(config)
+//	builder := provider.NewBuilder(&kafka.ProducerConfig{})
+//	producer, err := builder(func(c *kafka.ProducerConfig) {
+//	    // Apply custom configuration overrides here
+//	})
 func NewProducerProvider(config *ProducerConfig) kafka.ProducerProvider {
 	return &producerProvider{config: config}
 }
 
+// NewBuilder creates a new ProducerBuilder configured with the provided kafka.ProducerConfig.
+//
+// This method initializes the librdkafka-specific channel sizes for event and produce operations,
+// and returns a builder function that can be used to create producers with optional configuration overrides.
+//
+// Parameters:
+//   - conf: A pointer to kafka.ProducerConfig containing the base producer configuration.
+//     This configuration will be associated with the provider's internal config.
+//
+// Returns:
+//   - kafka.ProducerBuilder: A builder function that accepts a configuration function and returns
+//     a configured Producer instance or an error. The builder allows for
+//     additional configuration customization at producer creation time.
+//
+// Example:
+//
+//	provider := librd.NewProducerProvider(baseConfig)
+//	builder := provider.NewBuilder(&kafka.ProducerConfig{})
+//	producer, err := builder(func(c *kafka.ProducerConfig) {
+//	    // Apply custom overrides here
+//	    c.Id = "my-custom-producer"
+//	})
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 func (c *producerProvider) NewBuilder(conf *kafka.ProducerConfig) kafka.ProducerBuilder {
 	c.config.ProducerConfig = conf
 
@@ -91,36 +165,21 @@ func NewProducer(configs *ProducerConfig) (kafka.Producer, error) {
 
 	configs.Logger = configs.Logger.NewLog(log.Prefixed(fmt.Sprintf(`%s(librdkafka)`, loggerPrefix)))
 
-	configs.Logger.Info(`Producer initiating...`)
+	configs.Logger.Info(`Producer creating...`)
 	producer, err := librdKafka.NewProducer(configs.Librd)
 	if err != nil {
 		return nil, errors.Wrap(err, fmt.Sprintf(`Producer(%s) init failed`, configs.Id))
 	}
 
-	defer configs.Logger.Info(`Producer initiated`)
+	defer configs.Logger.Info(`Producer created`)
 
-	p := &librdProducer{
+	p := &Producer{
 		config:          configs,
 		baseProducer:    producer,
 		partitionCounts: new(sync.Map),
 	}
 
-	// Drain all the delivery messages (we don't need them here. since we are relying on transaction commit).
-	// This is important because if Produce() failed for a batch, the failed delivery reports will be sent to this
-	// channel
-	go func() {
-		for ev := range producer.Events() {
-			switch e := ev.(type) {
-			case librdKafka.Error:
-				p.config.Logger.Error(fmt.Sprintf(`Event [%s]%s`, e.Code(), e))
-			case *librdKafka.Message:
-				p.config.Logger.Error(fmt.Sprintf(`Event %s`, e.TopicPartition.Error))
-			case *librdKafka.Stats:
-				p.config.Logger.Error(fmt.Sprintf(`Event %s`, e))
-			}
-		}
-	}()
-
+	go p.handleEvents()
 	go p.printLogs()
 
 	producerType := map[bool]string{true: `Y`, false: `N`}
@@ -154,16 +213,16 @@ func NewProducer(configs *ProducerConfig) (kafka.Producer, error) {
 	})
 
 	if p.config.Transactional.Enabled {
-		return &librdTxProducer{
-			librdProducer: p,
-			txBegin:       false,
+		return &TransactionalProducer{
+			Producer: p,
+			txBegin:  false,
 		}, nil
 	}
 
 	return p, nil
 }
 
-func (p *librdProducer) NewRecord(
+func (p *Producer) NewRecord(
 	ctx context.Context,
 	key []byte,
 	value []byte,
@@ -197,7 +256,7 @@ func (p *librdProducer) NewRecord(
 	}
 }
 
-func (p *librdProducer) ProduceSync(ctx context.Context, message kafka.Record) (partition int32, offset int64, err error) {
+func (p *Producer) ProduceSync(ctx context.Context, message kafka.Record) (partition int32, offset int64, err error) {
 	dChan := make(chan librdKafka.Event)
 	kMessage, err := p.prepareMessage(message)
 	if err != nil {
@@ -218,7 +277,7 @@ func (p *librdProducer) ProduceSync(ctx context.Context, message kafka.Record) (
 
 	p.metrics.produceLatency.Observe(float64(time.Since(kMessage.Timestamp).Nanoseconds()/1e3), map[string]string{
 		`topic`: *dmSg.TopicPartition.Topic,
-	}, metrics.WithContext(ctx))
+	})
 
 	p.config.Logger.DebugContext(ctx, fmt.Sprintf("Delivered message to topic %s[%d]@%d",
 		message.Topic(), dmSg.TopicPartition.Partition, dmSg.TopicPartition.Offset))
@@ -226,37 +285,26 @@ func (p *librdProducer) ProduceSync(ctx context.Context, message kafka.Record) (
 	return dmSg.TopicPartition.Partition, int64(dmSg.TopicPartition.Offset), nil
 }
 
-func (p *librdProducer) Close() error {
-	p.config.Logger.Info(`Producer closing...`)
-	defer p.config.Logger.Info(`Producer closed`)
-
-	// Lets remove all the messages in librdkafka queues
+func (p *Producer) Flush() {
+	before := p.baseProducer.Len()
+	remaining := p.baseProducer.Flush(10000)
+	println(`before `, before, `after `, p.baseProducer.Len(), `remaining `, remaining)
 	if err := p.baseProducer.Purge(
 		librdKafka.PurgeInFlight |
 			librdKafka.PurgeNonBlocking | librdKafka.PurgeQueue); err != nil {
 		p.config.Logger.Error(err)
 	}
-
-	err := p.baseProducer.AbortTransaction(nil)
-	if err != nil {
-		if err.(librdKafka.Error).Code() == librdKafka.ErrState {
-			// No transaction in progress, ignore the error.
-			err = nil
-		} else {
-			return err
-		}
-	}
-
-	p.baseProducer.Close()
-
-	return nil
 }
 
-func (p *librdProducer) Restart() error {
+func (p *Producer) Close() error {
+	return p.close(false)
+}
+
+func (p *Producer) Restart() error {
 	p.config.Logger.Info(`Producer restarting...`)
 	defer p.config.Logger.Info(`Producer restarted`)
 
-	if err := p.forceClose(); err != nil {
+	if err := p.close(true); err != nil {
 		p.config.Logger.Warn(err)
 	}
 
@@ -267,42 +315,96 @@ func (p *librdProducer) Restart() error {
 
 	p.baseProducer = prd
 
+	p.handleEvents()
+
+	p.printLogs()
+
 	return nil
 }
 
-func (p *librdProducer) printLogs() {
-	logger := p.config.Logger.NewLog(log.Prefixed(`LibrdLogs`))
-	for lg := range p.baseProducer.Logs() {
-		switch lg.Level {
-		case 0, 1, 2:
-			logger.Error(lg.String(), `level`, lg.Level)
-		case 3, 4, 5:
-			logger.Warn(lg.String(), `level`, lg.Level)
-		case 6:
-			logger.Info(lg.String(), `level`, lg.Level)
-		case 7:
-			logger.Debug(lg.String(), `level`, lg.Level)
+func (p *Producer) printLogs() {
+	p.logsChannelClosed = make(chan struct{})
+
+	go func() {
+		defer p.config.Logger.Info(`Logs goroutine closed`)
+		logger := p.config.Logger.NewLog(log.Prefixed(`LibrdLogs`))
+		for lg := range p.baseProducer.Logs() {
+			switch lg.Level {
+			case 0, 1, 2:
+				logger.Error(lg.String(), `level`, lg.Level)
+			case 3, 4, 5:
+				logger.Warn(lg.String(), `level`, lg.Level)
+			case 6:
+				logger.Info(lg.String(), `level`, lg.Level)
+			case 7:
+				logger.Debug(lg.String(), `level`, lg.Level)
+			}
+		}
+
+		close(p.logsChannelClosed)
+	}()
+}
+
+func (p *Producer) handleEvents() {
+	// Capture message delivery reports, errors and metrics
+	go func() {
+		p.eventsChanClosed = make(chan struct{})
+		defer p.config.Logger.Info(`Events goroutine closed`)
+
+		for v := range p.baseProducer.Events() {
+			switch event := v.(type) {
+			case librdKafka.Error:
+				p.config.Logger.Error(fmt.Sprintf(`Event [%s]%s`, event.Code(), event))
+			case *librdKafka.Message:
+				p.config.OnMessageDelivery(DeliveryReport{event})
+
+			case *librdKafka.Stats:
+				p.config.Logger.Error(fmt.Sprintf(`Event %s`, event))
+			}
+		}
+
+		close(p.eventsChanClosed)
+	}()
+}
+
+func (p *Producer) close(forced bool) error {
+	if forced {
+		p.config.Logger.Warn(`Producer closing forcefully...`)
+	} else {
+		p.config.Logger.Info(`Producer closing...`)
+	}
+
+	defer p.config.Logger.Info(`Producer closed`)
+
+	err := p.baseProducer.AbortTransaction(nil)
+	if err != nil {
+		if err.(librdKafka.Error).Code() == librdKafka.ErrState {
+			// No transaction in progress, ignore the error.
+			err = nil
+		} else {
+			p.config.Logger.Warn(fmt.Sprintf(`Transaction abort error due to %s`, err.Error()))
 		}
 	}
-}
 
-func (p *librdProducer) forceClose() error {
-	p.config.Logger.Warn(`Producer closing forcefully...`)
-	defer p.config.Logger.Warn(`Producer closed`)
-
-	p.config.Logger.Info(`Purging producer queues kafka.PurgeInFlight|kafka.PurgeNonBlocking|kafka.PurgeQueue`)
-	if err := p.baseProducer.Purge(
-		librdKafka.PurgeInFlight |
-			librdKafka.PurgeNonBlocking | librdKafka.PurgeQueue); err != nil {
-		p.config.Logger.Error(err)
+	if forced {
+		p.config.Logger.Info(`Purging producer queues kafka.PurgeInFlight|kafka.PurgeQueue`)
+		if err := p.baseProducer.Purge(
+			librdKafka.PurgeInFlight | librdKafka.PurgeQueue); err != nil {
+			p.config.Logger.Error(err)
+		}
 	}
 
-	p.baseProducer.Close()
+	if !p.baseProducer.IsClosed() {
+		p.baseProducer.Close()
+	}
+
+	<-p.logsChannelClosed
+	<-p.eventsChanClosed
 
 	return nil
 }
 
-func (p *librdProducer) prepareMessage(message kafka.Record) (*librdKafka.Message, error) {
+func (p *Producer) prepareMessage(message kafka.Record) (*librdKafka.Message, error) {
 	t := time.Now()
 	topic := message.Topic()
 	m := &librdKafka.Message{
@@ -313,6 +415,7 @@ func (p *librdProducer) prepareMessage(message kafka.Record) (*librdKafka.Messag
 		Value:         message.Value(),
 		Timestamp:     t,
 		TimestampType: librdKafka.TimestampCreateTime,
+		Headers:       make([]librdKafka.Header, len(message.Headers())),
 	}
 
 	// Use the partitioner defined in librdkafka config
@@ -338,11 +441,11 @@ func (p *librdProducer) prepareMessage(message kafka.Record) (*librdKafka.Messag
 	}
 
 Headers:
-	for _, header := range message.Headers() {
-		m.Headers = append(m.Headers, librdKafka.Header{
+	for i, header := range message.Headers() {
+		m.Headers[i] = librdKafka.Header{
 			Key:   string(header.Key),
 			Value: header.Value,
-		})
+		}
 	}
 
 	if !message.Timestamp().IsZero() {
@@ -352,8 +455,8 @@ Headers:
 	return m, nil
 }
 
-func (p *librdProducer) getPartitionCount(topic string) (int32, error) {
-	//TODO refresh counts in a ticker
+func (p *Producer) getPartitionCount(topic string) (int32, error) {
+	//TODO refresh counts in a background thread
 	v, ok := p.partitionCounts.Load(topic)
 	if ok {
 		return v.(int32), nil

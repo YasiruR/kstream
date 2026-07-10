@@ -10,20 +10,23 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
 type DeliveryReport interface {
-	Topic() string
-	Partition() int32
-	Offset() int64
+	TopicPartition() TopicPartition
+	Offset() Offset
 	Error() error
+	Delivered() bool
 }
 
 type ProducerErr interface {
 	error
 	RequiresRestart() bool
 	TxnRequiresAbort() bool
+	ShouldShutdown() bool
+	Code() int
 }
 
 type ProducerProvider interface {
@@ -66,12 +69,39 @@ func (ack RequiredAcks) String() string {
 type ConsumerOffset struct {
 	Topic     string
 	Partition int32
-	Offset    int64
+	Offset    Offset
 	Meta      string
 }
 
 func (off *ConsumerOffset) String() string {
 	return fmt.Sprintf(`%s@%d%d`, off.Topic, off.Partition, off.Offset)
+}
+
+type ConsumerOffsets []ConsumerOffset
+
+func (list ConsumerOffsets) Print() string {
+	str := strings.Builder{}
+
+	var current string
+	for i, tp := range list {
+		if current != tp.Topic {
+			//if current == ``{
+			//	str.WriteString(tp.Topic+ `: `)
+			//}else {
+			//	str.WriteString("\n"+tp.Topic+ `: `)
+			//}
+			str.WriteString("\n" + tp.Topic + `: `)
+			current = tp.Topic
+		}
+
+		if i != len(list)-1 && list[i+1].Topic != current {
+			str.WriteString(fmt.Sprintf("%d@%s", tp.Partition, tp.Offset))
+		} else {
+			str.WriteString(fmt.Sprintf("%d@%s, ", tp.Partition, tp.Offset))
+		}
+	}
+
+	return str.String()
 }
 
 type Producer interface {
@@ -84,6 +114,7 @@ type Producer interface {
 		headers RecordHeaders,
 		meta string) Record
 	ProduceSync(ctx context.Context, record Record) (partition int32, offset int64, err error)
+	Flush()
 	Restart() error
 	Close() error
 }

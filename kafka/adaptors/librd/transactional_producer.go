@@ -9,43 +9,62 @@ package librd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	librdKafka "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/kafka"
-	"github.com/tryfix/metrics/v2"
-
-	"time"
+	kstreamErrors "github.com/gmbyapa/kstream/v2/pkg/errors"
 )
 
 type Err struct {
 	error
-	restart     bool
-	shouldAbort bool
+	restart        bool
+	shouldAbort    bool
+	shouldShutdown bool
+	code           int
 }
 
 func (e Err) TxnRequiresAbort() bool {
 	return e.shouldAbort
 }
 
-func (t Err) RequiresRestart() bool {
-	return t.restart
+func (e Err) RequiresRestart() bool {
+	return e.restart
 }
 
-type librdTxProducer struct {
-	*librdProducer
+func (e Err) ShouldShutdown() bool {
+	return e.shouldShutdown
+}
+
+func (e Err) Code() int {
+	return e.code
+}
+
+const (
+	transactionErrorPhaseInit        = `InitFailed`
+	transactionErrorPhaseBegin       = `BeginFailed`
+	transactionErrorPhaseSend        = `SendFailed`
+	transactionErrorPhaseSendOffsets = `SendOffsetsFailed`
+	transactionErrorPhaseCommit      = `CommitFailed`
+	transactionErrorPhaseAbort       = `AbortFailed`
+)
+
+type TransactionalProducer struct {
+	*Producer
 	txBegin bool
 }
 
-func (p *librdTxProducer) InitTransactions(ctx context.Context) error {
+func (p *TransactionalProducer) InitTransactions(ctx context.Context) error {
 	defer func(begin time.Time) {
-		p.metrics.transactions.initLatency.Observe(float64(time.Since(begin).Microseconds()), nil, metrics.WithContext(ctx))
+		p.metrics.transactions.initLatency.Observe(float64(time.Since(begin).Microseconds()), nil)
 	}(time.Now())
 
-	if err := p.librdProducer.baseProducer.InitTransactions(ctx); err != nil {
-		return p.handleTxError(ctx, err, `transaction init failed`, func() error {
-			return p.InitTransactions(ctx)
-		})
+	if err := p.Producer.baseProducer.InitTransactions(ctx); err != nil {
+		return p.handleTxError(ctx, err, errTxInit, func() error {
+			return p.Producer.baseProducer.InitTransactions(ctx)
+		}, 0)
 	}
 
 	p.config.Logger.Info(`Transaction inited`)
@@ -53,11 +72,11 @@ func (p *librdTxProducer) InitTransactions(ctx context.Context) error {
 	return nil
 }
 
-func (p *librdTxProducer) BeginTransaction() error {
-	if err := p.librdProducer.baseProducer.BeginTransaction(); err != nil {
-		return p.handleTxError(context.Background(), err, `transaction begin failed`, func() error {
-			return p.BeginTransaction()
-		})
+func (p *TransactionalProducer) BeginTransaction() error {
+	if err := p.Producer.baseProducer.BeginTransaction(); err != nil {
+		return p.handleTxError(context.Background(), err, errTxBegin, func() error {
+			return p.Producer.baseProducer.BeginTransaction()
+		}, 0)
 	}
 
 	p.txBegin = true
@@ -65,25 +84,25 @@ func (p *librdTxProducer) BeginTransaction() error {
 	return nil
 }
 
-func (p *librdTxProducer) CommitTransaction(ctx context.Context) error {
+func (p *TransactionalProducer) CommitTransaction(ctx context.Context) error {
 	defer func(begin time.Time) {
-		p.metrics.transactions.commitLatency.Observe(float64(time.Since(begin).Microseconds()), nil, metrics.WithContext(ctx))
+		p.metrics.transactions.commitLatency.Observe(float64(time.Since(begin).Microseconds()), nil)
 	}(time.Now())
 
 	defer p.resetState()
 
-	if err := p.librdProducer.baseProducer.CommitTransaction(ctx); err != nil {
-		return p.handleTxError(ctx, err, `transaction commit failed`, func() error {
-			return p.CommitTransaction(ctx)
-		})
+	if err := p.Producer.baseProducer.CommitTransaction(ctx); err != nil {
+		return p.handleTxError(ctx, err, errTxCommit, func() error {
+			return p.Producer.baseProducer.CommitTransaction(ctx)
+		}, 0)
 	}
 
-	p.librdProducer.config.Logger.Trace(fmt.Sprintf(`transaction commited`))
+	p.Producer.config.Logger.Trace(fmt.Sprintf(`transaction commited`))
 
 	return nil
 }
 
-func (p *librdTxProducer) SendOffsetsToTransaction(ctx context.Context, offsets []kafka.ConsumerOffset, meta *kafka.GroupMeta) error {
+func (p *TransactionalProducer) SendOffsetsToTransaction(ctx context.Context, offsets []kafka.ConsumerOffset, meta *kafka.GroupMeta) error {
 	var kOffsets []librdKafka.TopicPartition
 	for i := range offsets {
 		kOffsets = append(kOffsets, librdKafka.TopicPartition{
@@ -100,28 +119,29 @@ func (p *librdTxProducer) SendOffsetsToTransaction(ctx context.Context, offsets 
 		}
 	}
 
-	if err := p.librdProducer.baseProducer.SendOffsetsToTransaction(ctx, kOffsets, meta.Meta.(*librdKafka.ConsumerGroupMetadata)); err != nil {
-		return p.handleTxError(ctx, err, `transaction SendOffsetsToTransaction failed`, func() error {
-			return p.SendOffsetsToTransaction(ctx, offsets, meta)
-		})
+	cgMeta := meta.Meta.(*librdKafka.ConsumerGroupMetadata)
+	if err := p.Producer.baseProducer.SendOffsetsToTransaction(ctx, kOffsets, cgMeta); err != nil {
+		return p.handleTxError(ctx, err, errTxSendOffsets, func() error {
+			return p.Producer.baseProducer.SendOffsetsToTransaction(ctx, kOffsets, cgMeta)
+		}, 0)
 	}
 
-	p.librdProducer.config.Logger.Trace(fmt.Sprintf(`Offsets sent, %+v`, kOffsets))
+	p.Producer.config.Logger.Trace(fmt.Sprintf(`Offsets sent, %+v`, kOffsets))
 
 	return nil
 }
 
-func (p *librdTxProducer) AbortTransaction(ctx context.Context) error {
+func (p *TransactionalProducer) AbortTransaction(ctx context.Context) error {
 	defer p.resetState()
 
 	defer func(begin time.Time) {
-		p.metrics.transactions.abortLatency.Observe(float64(time.Since(begin).Microseconds()), nil, metrics.WithContext(ctx))
+		p.metrics.transactions.abortLatency.Observe(float64(time.Since(begin).Microseconds()), nil)
 	}(time.Now())
 
-	if err := p.librdProducer.baseProducer.AbortTransaction(ctx); err != nil && err.(librdKafka.Error).Code() != librdKafka.ErrState {
-		return p.handleTxError(ctx, err, `transaction abort failed`, func() error {
-			return p.AbortTransaction(ctx)
-		})
+	if err := p.Producer.baseProducer.AbortTransaction(ctx); err != nil && err.(librdKafka.Error).Code() != librdKafka.ErrState {
+		return p.handleTxError(ctx, err, errTxAbort, func() error {
+			return p.Producer.baseProducer.AbortTransaction(ctx)
+		}, 0)
 	}
 
 	p.config.Logger.WarnContext(ctx, fmt.Sprintf(`Transaction aborted`))
@@ -129,69 +149,164 @@ func (p *librdTxProducer) AbortTransaction(ctx context.Context) error {
 	return nil
 }
 
-func (p *librdTxProducer) ProduceSync(ctx context.Context, message kafka.Record) (partition int32, offset int64, err error) {
+func (p *TransactionalProducer) ProduceSync(ctx context.Context, message kafka.Record) (partition int32, offset int64, err error) {
 	panic(`transactional producer does not support ProduceSync mode`)
 }
 
-func (p *librdTxProducer) ProduceAsync(ctx context.Context, message kafka.Record) (err error) {
+func (p *TransactionalProducer) ProduceAsync(ctx context.Context, message kafka.Record) (err error) {
 	defer func(begin time.Time) {
 		p.metrics.produceLatency.Observe(float64(time.Since(begin).Microseconds()), map[string]string{
 			`topic`: message.Topic(),
-		}, metrics.WithContext(ctx))
+		})
 	}(time.Now())
 
 	if !p.txBegin {
 		if err := p.BeginTransaction(); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
 	kMessage, err := p.prepareMessage(message)
 	if err != nil {
-		return p.handleTxError(ctx, err, `prepareMessage failed`, nil)
+		return p.handleTxError(ctx, err, errProduce, nil, 0)
 	}
 
-	err = p.librdProducer.baseProducer.Produce(kMessage, nil)
+	err = p.Producer.baseProducer.Produce(kMessage, nil)
 	if err != nil {
-		return p.handleTxError(ctx, err, `ProduceAsync failed`, nil)
+		return p.handleTxError(ctx, err, errProduce, func() error {
+			return p.Producer.baseProducer.Produce(kMessage, nil)
+		}, 0)
 	}
 
-	p.config.Logger.TraceContext(ctx, fmt.Sprintf(`Record %s queued`, message))
+	p.config.Logger.TraceContext(ctx, "Record "+message.String()+" queued")
 
 	return nil
 }
 
-func (p *librdTxProducer) handleTxError(ctx context.Context, err error, reason string, retry func() error) error {
-	p.config.Logger.WarnContext(ctx, fmt.Sprintf(`Retring transaction. Reason: %s, Error %s`, reason, err))
-	p.metrics.produceErrors.Count(1, map[string]string{`error`: fmt.Sprint(err)}, metrics.WithContext(ctx))
+type errorType string
 
-	librdErr := err.(librdKafka.Error)
+const (
+	errProduce       errorType = `send failed`
+	errTxInit        errorType = `transaction init failed`
+	errTxBegin       errorType = `transaction begin failed`
+	errTxSendOffsets errorType = `transaction send offests failed`
+	errTxCommit      errorType = `transaction commit failed`
+	errTxAbort       errorType = `transaction abort failed`
+)
 
-	if librdErr.IsRetriable() || librdErr.IsTimeout() {
-		p.config.Logger.WarnContext(ctx, fmt.Sprintf(`%s due to (%s), retrying...`, reason, err))
-		return retry()
-	}
+func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, errorType errorType, retryOp func() error, numOfAttempts int) error {
+	p.metrics.produceErrors.Count(1, map[string]string{`error`: fmt.Sprint(err)})
 
-	defer p.resetState()
-
-	if librdErr.TxnRequiresAbort() || librdErr.Code() == librdKafka.ErrQueueFull {
+	// Try to extract librdKafka.Error from potentially wrapped errors
+	var librdErr librdKafka.Error
+	if !errors.As(err, &librdErr) {
+		// If we can't extract a librdKafka.Error, treat as fatal (This shouldn't happen unless there a bug)
+		p.config.Logger.ErrorContext(ctx, fmt.Sprintf(`Unknown error type, cannot classify: %T - %v`, err, err))
+		p.resetState()
 		return Err{
-			error:       err,
-			shouldAbort: true,
+			error:          err,
+			shouldShutdown: true,
 		}
 	}
 
-	if fatal := p.librdProducer.baseProducer.GetFatalError(); fatal != nil ||
-		librdErr.IsFatal() || librdErr.Code() == librdKafka.ErrState || librdErr.Code() == librdKafka.ErrFatal {
+	if numOfAttempts > p.Producer.config.MaxRetryCount {
+		p.config.Logger.ErrorContext(ctx, fmt.Sprintf(`Max retry attempts exceed. Client should shutdown.`))
+		return Err{
+			error:          kstreamErrors.Wrapf(err, `producer error retry count exceeded. Max:%d, Current:%d`, p.Producer.config.MaxRetryCount, numOfAttempts),
+			shouldShutdown: true,
+		}
+	}
+	numOfAttempts++
+
+	p.config.Logger.Warn(p.baseProducer.GetFatalError())
+
+	p.config.Logger.Warn(fmt.Sprintf(`Handling librd error. (Attempt %d). ErrorType:%s IsTimeout=%v, IsRetriable=%v, TxnRequiresAbort=%v, IsFatal=%v, Code=%v`,
+		numOfAttempts, errorType, librdErr.IsTimeout(), librdErr.IsRetriable(), librdErr.TxnRequiresAbort(), librdErr.IsFatal(), librdErr.Code()))
+
+	// Handle context error, after this point there is nothing to handle.
+	// Note: if a transaction is still in progress, producer Close() method will handle that
+	if ctx.Err() != nil {
+		p.Producer.config.Logger.Error(fmt.Sprintf(`Context already expired (ctx.Err=%v), cannot retry`, ctx.Err()))
+		p.resetState()
+		return Err{
+			error:          kstreamErrors.Wrap(ctx.Err(), `Context already expired cannot retry`),
+			shouldShutdown: true,
+		}
+	}
+
+	// Check for fatal/fencing errors FIRST before any retry logic
+	// These errors should never be retried as the producer is in an unrecoverable state
+	if librdErr.Code() == librdKafka.ErrFenced || librdErr.Code() == librdKafka.ErrProducerFenced ||
+		librdErr.Code() == librdKafka.ErrInvalidProducerIDMapping || librdErr.Code() == librdKafka.ErrFencedInstanceID ||
+		librdErr.Code() == librdKafka.ErrInvalidProducerEpoch || librdErr.Code() == librdKafka.ErrOutOfOrderSequenceNumber ||
+		librdErr.Code() == librdKafka.ErrUnknownProducerID || librdErr.Code() == librdKafka.ErrState ||
+		librdErr.Code() == librdKafka.ErrFatal {
+		p.resetState()
 		return Err{
 			error:   err,
 			restart: true,
 		}
 	}
 
-	return err
+	// Check if transaction requires abort (this takes precedence over retries)
+	if librdErr.TxnRequiresAbort() {
+		p.config.Logger.WarnContext(ctx, fmt.Sprintf(`Transaction aborting. Reason: %s, Error %s`, errorType, err))
+		p.resetState()
+		return Err{
+			error:       err,
+			shouldAbort: true,
+		}
+	}
+
+	// Now check for retriable errors
+	if errorType == errTxInit || errorType == errTxCommit || errorType == errTxAbort || errorType == errTxSendOffsets {
+		//if !librdErr.IsTimeout() && librdErr.IsRetriable() {
+		if librdErr.IsRetriable() {
+			if retryOp != nil {
+				// Check if context is already expired - if so, retrying is pointless
+				p.config.Logger.Warn(fmt.Sprintf(`Retrying transaction. Reason: %s, Error %s`, errorType, err))
+				// Retry the operation and handle the result recursively
+				if retryErr := retryOp(); retryErr != nil {
+					return p.handleTxError(ctx, retryErr, errorType, retryOp, numOfAttempts)
+				}
+
+				return nil
+			}
+		}
+	}
+
+	// If the librdkafka producer queue is full, wait until some messages are flushed
+	if errorType == errProduce && librdErr.Code() == librdKafka.ErrQueueFull {
+		if retryOp != nil {
+			p.config.Logger.Warn(fmt.Sprintf("Produce failed due to Queue full. Retrying in %s\n%s", 50*time.Millisecond,
+				"If this continues, consider changing producer properties queue.buffering.max.kbytes and "+
+					"queue.buffering.max.messages to a higher value",
+			))
+			time.Sleep(50 * time.Millisecond)
+			p.config.Logger.WarnContext(ctx, fmt.Sprintf(`Retrying message. Reason: %s, Error %s`, errorType, err))
+			// Retry the Warn and handle the result recursively
+			if retryErr := retryOp(); retryErr != nil {
+				return p.handleTxError(ctx, retryErr, errorType, retryOp, numOfAttempts)
+			}
+			return nil
+		}
+
+		p.resetState()
+		return Err{
+			error:       err,
+			shouldAbort: true,
+		}
+	}
+
+	p.resetState()
+
+	// Any other errors should shut down the producer or consuming application
+	return Err{
+		error:          err,
+		shouldShutdown: true,
+	}
 }
 
-func (p *librdTxProducer) resetState() {
+func (p *TransactionalProducer) resetState() {
 	p.txBegin = false
 }

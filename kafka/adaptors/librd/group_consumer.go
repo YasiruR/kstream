@@ -172,18 +172,12 @@ MAIN:
 					record.ctx = g.config.ContextExtractor(record)
 				}
 
-				// Apply consumer interceptor
-				var rec kafka.Record = record
-				if g.config.Interceptor != nil {
-					rec = g.config.Interceptor.OnConsume(record)
-				}
-
-				g.config.Logger.DebugContext(rec.Ctx(), fmt.Sprintf(`Message %s with key (%s) received in %s`,
-					rec, rec.Key(), t))
+				g.config.Logger.DebugContext(record.ctx, fmt.Sprintf(`Message %s with key (%s) received in %s`,
+					record, record.Key(), t))
 
 				g.metrics.endToEndLatency.Observe(float64(t), map[string]string{
-					`topic_partition`: fmt.Sprintf(`%s_%d`, rec.Topic(), rec.Partition()),
-				}, metrics.WithContext(record.ctx))
+					`topic_partition`: fmt.Sprintf(`%s_%d`, record.Topic(), record.Partition()),
+				})
 
 				pId := kafka.TopicPartition{
 					Topic:     *e.TopicPartition.Topic,
@@ -195,7 +189,7 @@ MAIN:
 					panic(`assignment does not exist`)
 				}
 
-				assigmnt.(chan kafka.Record) <- rec
+				assigmnt.(chan kafka.Record) <- record
 
 			case librdKafka.PartitionEOF:
 				g.config.Logger.Info(fmt.Sprintf(`Partition end %s`, e))
@@ -296,6 +290,10 @@ func (g *groupConsumer) assign(c *librdKafka.Consumer, partitions []librdKafka.T
 		g.startShutdownOnErr(err)
 		return errors.Wrap(err, `assignment generate failed`)
 	}
+
+	g.config.Logger.Info(fmt.Sprintf(`Before Librd Assign() Sleep start(10 seconds)`))
+	time.Sleep(10 * time.Second)
+	g.config.Logger.Info(fmt.Sprintf(`Before Librd Assign() Sleep done`))
 
 	err = c.Assign(librdAssign)
 	if err != nil {

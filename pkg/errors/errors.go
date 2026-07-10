@@ -30,6 +30,10 @@ func Wrapf(err error, msg string, a ...interface{}) error {
 	return fmt.Errorf("%s %s \ncaused by: %w ", fmt.Sprintf(msg, a...), filePath(2), err)
 }
 
+func As(err error, msg any) bool {
+	return errors.As(err, &msg)
+}
+
 func UnWrapRecursivelyUntil(err error, asserter func(unWrapped error) bool) error {
 	if err == nil {
 		return nil

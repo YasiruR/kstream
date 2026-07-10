@@ -49,10 +49,7 @@ func (conf *ProducerConfig) setUp() error {
 			panic(err)
 		}
 
-		// For transactional producers, delivery success is
-		// acknowledged by producer batch commit, so we don't need
-		// to listen to individual delivery reports
-		if err := conf.Librd.SetKey(`go.delivery.reports`, false); err != nil {
+		if err := conf.Librd.SetKey(`go.delivery.reports`, true); err != nil {
 			panic(err)
 		}
 

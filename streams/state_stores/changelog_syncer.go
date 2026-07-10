@@ -3,10 +3,11 @@ package state_stores
 import (
 	"context"
 	"fmt"
-	"github.com/tryfix/metrics/v2"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tryfix/metrics/v2"
 
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/pkg/errors"

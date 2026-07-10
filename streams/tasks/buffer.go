@@ -3,12 +3,13 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/gmbyapa/kstream/v2/kafka"
 	"github.com/gmbyapa/kstream/v2/pkg/errors"
 	"github.com/gmbyapa/kstream/v2/streams/topology"
 	"github.com/tryfix/metrics/v2"
-	"sync"
-	"time"
 
 	"github.com/tryfix/log"
 )
@@ -98,7 +99,7 @@ func (b *commitBuffer) Add(record *Record) error {
 	b.offsetMap[fmt.Sprintf(`%s-%d`, record.Topic(), record.Partition())] = kafka.ConsumerOffset{
 		Topic:     record.Topic(),
 		Partition: record.Partition(),
-		Offset:    record.Offset() + 1,
+		Offset:    kafka.Offset(record.Offset() + 1),
 	}
 
 	b.logger.TraceContext(record.Ctx(), `Record stored in commit buffer`, record.String())
@@ -149,6 +150,12 @@ func (b *commitBuffer) commit() error {
 
 			return err
 		}
+
+		// Network fault -> Stop HB
+
+		// Sleep(5s)
+
+		// Transaqction timeout 10 Minutes
 
 		if err := b.producer.SendOffsetsToTransaction(b.ctx, offsets, meta); err != nil {
 			return errors.Wrap(err, `commit(SendOffsetsToTransaction) failed`)

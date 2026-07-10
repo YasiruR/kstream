@@ -67,9 +67,6 @@ type Config struct {
 		Buffer tasks.BufferConfig
 		// FailedMessageHandler used to handle failed messages(non kafka Process failures and serialization errors)
 		FailedMessageHandler tasks.FailedMessageHandler
-		// TaskInterceptorBuilder creates a task-scoped interceptor with an optional shared state
-		// across processor and producer hooks. Built per-task with the task's producer wrapper.
-		TaskInterceptorBuilder topology.TaskInterceptorBuilder
 	}
 
 	// Consumer default consumer properties

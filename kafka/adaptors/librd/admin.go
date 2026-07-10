@@ -23,6 +23,7 @@ type adminOptions struct {
 	BootstrapServers []string
 	Timeout          time.Duration
 	Logger           log.Logger
+	MockBrokerMode   bool
 }
 
 func (opts *adminOptions) apply(options ...AdminOption) {
@@ -47,15 +48,22 @@ func WithTimeout(duration time.Duration) AdminOption {
 	}
 }
 
-type kAdmin struct {
-	admin   *librdKafka.AdminClient
-	logger  log.Logger
-	timeout time.Duration
+func WithMockBrokerEnabled() AdminOption {
+	return func(options *adminOptions) {
+		options.MockBrokerMode = true
+	}
+}
+
+type KAdmin struct {
+	admin          *librdKafka.AdminClient
+	logger         log.Logger
+	timeout        time.Duration
+	mockBrokerMode bool
 
 	tempTopicConfigs map[string]*kafka.Topic
 }
 
-func NewAdmin(bootstrapServer []string, options ...AdminOption) *kAdmin {
+func NewAdmin(bootstrapServer []string, options ...AdminOption) *KAdmin {
 	opts := new(adminOptions)
 	opts.apply(options...)
 	config := &librdKafka.ConfigMap{
@@ -67,25 +75,22 @@ func NewAdmin(bootstrapServer []string, options ...AdminOption) *kAdmin {
 		logger.Fatal(fmt.Sprintf(`cannot get controller - %+v`, err))
 	}
 
-	return &kAdmin{
+	return &KAdmin{
 		admin:            admin,
 		logger:           logger,
 		timeout:          opts.Timeout,
 		tempTopicConfigs: map[string]*kafka.Topic{},
+		mockBrokerMode:   opts.MockBrokerMode,
 	}
 }
 
-func (a *kAdmin) FetchInfo(topics []string) (map[string]*kafka.Topic, error) {
+func (a *KAdmin) FetchInfo(topics []string) (map[string]*kafka.Topic, error) {
 	// prepare resources
 	var resources []librdKafka.ConfigResource
 
 	topicInfo, err := a.fetchInfo(topics)
 	if err != nil {
 		return nil, err
-	}
-
-	if len(topicInfo) == 0 {
-		return topicInfo, nil
 	}
 
 	for _, meta := range topicInfo {
@@ -95,23 +100,25 @@ func (a *kAdmin) FetchInfo(topics []string) (map[string]*kafka.Topic, error) {
 		})
 	}
 
-	topicConfigs, err := a.admin.DescribeConfigs(context.Background(), resources,
-		librdKafka.SetAdminRequestTimeout(a.timeout),
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, `cannot get metadata`)
-	}
+	if !a.mockBrokerMode {
+		topicConfigs, err := a.admin.DescribeConfigs(context.Background(), resources,
+			librdKafka.SetAdminRequestTimeout(a.timeout),
+		)
+		if err != nil {
+			return nil, errors.Wrap(err, `cannot get metadata`)
+		}
 
-	for _, tp := range topicConfigs {
-		topicInfo[tp.Name].ConfigEntries[`cleanup.policy`] = tp.Config[`cleanup.policy`].Value
-		topicInfo[tp.Name].ConfigEntries[`min.insync.replicas`] = tp.Config[`min.insync.replicas`].Value
-		topicInfo[tp.Name].ConfigEntries[`retention.ms`] = tp.Config[`retention.ms`].Value
+		for _, tp := range topicConfigs {
+			topicInfo[tp.Name].ConfigEntries[`cleanup.policy`] = tp.Config[`cleanup.policy`].Value
+			topicInfo[tp.Name].ConfigEntries[`min.insync.replicas`] = tp.Config[`min.insync.replicas`].Value
+			topicInfo[tp.Name].ConfigEntries[`retention.ms`] = tp.Config[`retention.ms`].Value
+		}
 	}
 
 	return topicInfo, nil
 }
 
-func (a *kAdmin) verifyExists(topics []string) (bool, error) {
+func (a *KAdmin) verifyExists(topics []string) (bool, error) {
 	// prepare resources
 	var resources []librdKafka.ConfigResource
 
@@ -131,7 +138,7 @@ func (a *kAdmin) verifyExists(topics []string) (bool, error) {
 	return len(topicConfigs) == len(topics), nil
 }
 
-func (a *kAdmin) fetchInfo(topics []string) (map[string]*kafka.Topic, error) {
+func (a *KAdmin) fetchInfo(topics []string) (map[string]*kafka.Topic, error) {
 	topicMeta, err := a.admin.GetMetadata(nil, true, int(a.timeout.Milliseconds()))
 	if err != nil {
 		return nil, errors.Wrap(err, `cannot get metadata`)
@@ -177,7 +184,7 @@ func (a *kAdmin) fetchInfo(topics []string) (map[string]*kafka.Topic, error) {
 	return topicInfo, nil
 }
 
-func (a *kAdmin) CreateTopics(topics []*kafka.Topic) error {
+func (a *KAdmin) CreateTopics(topics []*kafka.Topic) error {
 	var tpNames []string
 	var specifications []librdKafka.TopicSpecification
 	for _, info := range topics {
@@ -220,7 +227,7 @@ func (a *kAdmin) CreateTopics(topics []*kafka.Topic) error {
 	return nil
 }
 
-func (a *kAdmin) StoreConfigs(topics []*kafka.Topic) error {
+func (a *KAdmin) StoreConfigs(topics []*kafka.Topic) error {
 	for _, topic := range topics {
 		if _, ok := a.tempTopicConfigs[topic.Name]; ok {
 			return errors.Errorf(`topic %s already marked for creation`, topic.Name)
@@ -232,7 +239,7 @@ func (a *kAdmin) StoreConfigs(topics []*kafka.Topic) error {
 	return nil
 }
 
-func (a *kAdmin) ApplyConfigs() error {
+func (a *KAdmin) ApplyConfigs() error {
 	var topics []*kafka.Topic
 	for _, tp := range a.tempTopicConfigs {
 		topics = append(topics, tp)
@@ -241,7 +248,7 @@ func (a *kAdmin) ApplyConfigs() error {
 	return a.CreateTopics(topics)
 }
 
-func (a *kAdmin) DeleteTopics(topics []string) error {
+func (a *KAdmin) DeleteTopics(topics []string) error {
 	result, err := a.admin.DeleteTopics(context.Background(), topics,
 		librdKafka.SetAdminOperationTimeout(a.timeout))
 	if err != nil {
@@ -266,7 +273,7 @@ func (a *kAdmin) DeleteTopics(topics []string) error {
 	return nil
 }
 
-func (a *kAdmin) ListTopics() ([]string, error) {
+func (a *KAdmin) ListTopics() ([]string, error) {
 	var topics []string
 	topicMeta, err := a.admin.GetMetadata(nil, true, int(a.timeout.Milliseconds()))
 	if err != nil {
@@ -280,7 +287,7 @@ func (a *kAdmin) ListTopics() ([]string, error) {
 	return topics, nil
 }
 
-func (a *kAdmin) verifyAction(action string, topics []string) {
+func (a *KAdmin) verifyAction(action string, topics []string) {
 	a.logger.Info(fmt.Sprintf(`Topic [%s] still in progress for topics %v. Waiting...`, action, topics))
 	time.Sleep(1 * time.Second)
 	exists, err := a.verifyExists(topics)
@@ -300,6 +307,6 @@ func (a *kAdmin) verifyAction(action string, topics []string) {
 	}
 }
 
-func (a *kAdmin) Close() {
+func (a *KAdmin) Close() {
 	a.admin.Close()
 }

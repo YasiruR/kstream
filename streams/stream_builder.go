@@ -221,7 +221,6 @@ func (b *StreamBuilder) NewRunner() Runner {
 				tasks.WithBufferSize(b.config.Processing.Buffer.Size),
 				tasks.WithBufferFlushInterval(b.config.Processing.Buffer.FlushInterval),
 				tasks.WithFailedMessageHandler(b.config.Processing.FailedMessageHandler),
-				tasks.WithTaskInterceptorBuilder(b.config.Processing.TaskInterceptorBuilder),
 			)
 		},
 		ctx: b.builderCtx,
