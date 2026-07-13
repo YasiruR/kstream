@@ -244,7 +244,7 @@ func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, er
 		p.resetState()
 		return Err{
 			error:   err,
-			restart: true,
+			restart: true, // Note: may lead to a loop of fencing
 		}
 	}
 
@@ -259,6 +259,7 @@ func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, er
 	}
 
 	// Now check for retriable errors
+	// Note: retriable errors for txnBegin and produce?
 	if errorType == errTxInit || errorType == errTxCommit || errorType == errTxAbort || errorType == errTxSendOffsets {
 		//if !librdErr.IsTimeout() && librdErr.IsRetriable() {
 		if librdErr.IsRetriable() {
@@ -309,4 +310,67 @@ func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, er
 
 func (p *TransactionalProducer) resetState() {
 	p.txBegin = false
+}
+
+// KIP-1050 aligns producer errors across client libraries, maybe we can define our errors based on that. Despite KIP-1050 is marked as complete,
+// it also reports misalignment with errors defined in KIP-691.
+// KIP-1050: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/309496816/KIP-1050+Consistent+error+handling+for+Transactions#KIP1050%3AConsistenterrorhandlingforTransactions-ProposedChanges
+// 	- Released with 4.1.0: https://kafka.apache.org/blog/2025/09/04/apache-kafka-4.1.0-release-announcement/
+// General approach for errors: https://issues.apache.org/jira/browse/KAFKA-5342
+
+var producerFatalErrors = []librdKafka.ErrorCode{
+	librdKafka.ErrFatal,
+	librdKafka.ErrFenced,
+	librdKafka.ErrProducerFenced,
+	// New
+	librdKafka.ErrTransactionalIDAuthorizationFailed,
+	// New. Current library logic treats this based on librd flags. KIP-890 mentions that it can be abortable/fatal for produce requests but should
+	// be fatal for txn-offset-commit requests. KIP-1050 mentions that it should be handled similarly for produce and transaction APIs.
+	// To be safe, and since this is a moderately frequent error, maybe we can just treat it as fatal?
+	// (However, if librd flags are reliable enough to handle this and up to date, we can keep the flag-based approach)
+	// KIP-890: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/235834631/KIP-890+Transactions+Server-Side+Defense#KIP890%3ATransactionsServerSideDefense-OldClients
+	// 	- Released with 4.0.0: https://kafka.apache.org/40/operations/transaction-protocol/
+	// Transaction Manager (java) treats it as abortable: https://github.com/apache/kafka/blob/trunk/clients/src/main/java/org/apache/kafka/clients/producer/internals/TransactionManager.java#L804
+	librdKafka.ErrInvalidTxnState,
+	// New. Must be fatal due to the root cause being transaction timeout configuration mismatch.
+	librdKafka.ErrInvalidTransactionTimeout,
+	// New. Must connect to the new coordinator. Do not need to fatal/restart if the producer silently fetches the new coordinator's metadata.
+	// Java implementation does not mention its type: https://kafka.apache.org/40/javadoc/org/apache/kafka/common/errors/TransactionCoordinatorFencedException.html
+	// Error: https://kafka.apache.org/43/design/protocol/#:~:text=TRANSACTION%5FCOORDINATOR%5FFENCED
+	librdKafka.ErrTransactionCoordinatorFenced,
+	librdKafka.ErrFencedInstanceID,
+	// KIP-360 defined this as abortable (e.g. where epoch bump is possible such as idempotent producer), which was later changed to fatal again with
+	// Ticket: https://issues.apache.org/jira/browse/KAFKA-18019. Already released in Java: https://github.com/apache/kafka/pull/17822
+	librdKafka.ErrInvalidProducerIDMapping,
+	// New. If the gapless guarantee is enabled, the producer must panic upon this error .
+	// Librd config: https://docs.confluent.io/platform/current/clients/librdkafka/html/md_CONFIGURATION.html#:~:text=enable%2Egapless%2Eguarantee
+	librdKafka.ErrGaplessGuarantee,
+	// Errors introduced by librd:
+	// librdKafka.ErrState,	// may not be surfaced to application
+	// librdKafka.ErrUnsupportedFeature,
+	// librdKafka.ErrCritSysResource,
+	// librdKafka.ErrFs,
+	// librdKafka.ErrFail,	// probably context dependent
+}
+
+var producerContextDependentErrors = []librdKafka.ErrorCode{
+	// In brokers ≥2.5, abortable for produce API but fatal for transaction API. If depending on flags is not reliable, we can treat it as fatal
+	// as proposed in KIP-1050. Java also suggests re-initializing the producer: https://kafka.apache.org/28/javadoc/org/apache/kafka/common/errors/InvalidProducerEpochException.html
+	librdKafka.ErrInvalidProducerEpoch,
+	// This can happen when the broker loses the producer's state (PID, epoch) and therefore, idempotent producer can abort, bump epoch and retry.
+	// This was made from fatal to abortable in KIP-360.
+	librdKafka.ErrUnknownProducerID,
+	// For idempotent producer, this can be retried with the same producer. For transactional producer, this should be fatal.
+	// Java implementation: https://kafka.apache.org/31/javadoc/org/apache/kafka/common/errors/OutOfOrderSequenceException.html
+	librdKafka.ErrOutOfOrderSequenceNumber,
+}
+
+var producerInvalidConfigErrors = []librdKafka.ErrorCode{
+	// Ticket Kafka-13668 suggests that this should not be fatal, which is already integrated to Java: https://issues.apache.org/jira/browse/KAFKA-13668
+	// KIP-1050 mentions that the current behaviour can either be abortable or fatal depending on the context, but proposes to handle it in the application.
+	// KIP-1050: https://cwiki.apache.org/confluence/spaces/KAFKA/pages/309496816/KIP-1050+Consistent+error+handling+for+Transactions#KIP1050:ConsistenterrorhandlingforTransactions-Clientsidecodeexample:~:text=ClusterAuthorizationException
+	librdKafka.ErrClusterAuthorizationFailed,
+	// Java implementation recommends that this should generally be fatal: https://kafka.apache.org/21/javadoc/org/apache/kafka/common/errors/UnsupportedVersionException.html
+	// KIP-1050 mentions the same as above.
+	librdKafka.ErrUnsupportedVersion,
 }
