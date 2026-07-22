@@ -18,6 +18,7 @@ import (
 	kstreamErrors "github.com/gmbyapa/kstream/v2/pkg/errors"
 )
 
+// Note:: do we need both fatal and shutdown types?
 type Err struct {
 	error
 	restart        bool
@@ -224,7 +225,7 @@ func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, er
 		numOfAttempts, errorType, librdErr.IsTimeout(), librdErr.IsRetriable(), librdErr.TxnRequiresAbort(), librdErr.IsFatal(), librdErr.Code()))
 
 	// Handle context error, after this point there is nothing to handle.
-	// Note: if a transaction is still in progress, producer Close() method will handle that
+	// Note:: if a transaction is still in progress, producer Close() method will handle that
 	if ctx.Err() != nil {
 		p.Producer.config.Logger.Error(fmt.Sprintf(`Context already expired (ctx.Err=%v), cannot retry`, ctx.Err()))
 		p.resetState()
@@ -244,7 +245,7 @@ func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, er
 		p.resetState()
 		return Err{
 			error:   err,
-			restart: true, // Note: may lead to a loop of fencing
+			restart: true, // Note:: may lead to a loop of fencing
 		}
 	}
 
@@ -259,7 +260,7 @@ func (p *TransactionalProducer) handleTxError(ctx context.Context, err error, er
 	}
 
 	// Now check for retriable errors
-	// Note: retriable errors for txnBegin and produce?
+	// Note:: retriable errors for txnBegin and produce?
 	if errorType == errTxInit || errorType == errTxCommit || errorType == errTxAbort || errorType == errTxSendOffsets {
 		//if !librdErr.IsTimeout() && librdErr.IsRetriable() {
 		if librdErr.IsRetriable() {

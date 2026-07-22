@@ -501,6 +501,7 @@ func TestTransactionalProducer_Produce(t *testing.T) {
 		errorCriteria        errorCriteria
 	}{
 		{
+			// Note:: Check comment in producer
 			name: "Produce_OutOfOrderSequence_ShouldAbort",
 			fields: fields{
 				injectType:         errInjectTypeResponseError,
@@ -525,6 +526,7 @@ func TestTransactionalProducer_Produce(t *testing.T) {
 			errorCriteria: errorCriteria{},
 		},
 		{
+			// Note:: belongs to an invalid configuration error type as per KIP-1050, but ShouldRestart may be fine for the application layer.
 			name: "Produce_InvalidTopicException_ShouldRestart",
 			fields: fields{
 				injectType:         errInjectTypeResponseError,
@@ -538,6 +540,7 @@ func TestTransactionalProducer_Produce(t *testing.T) {
 			},
 		},
 		{
+			// Note:: check comment in producer
 			name: "Produce_InvalidProducerEpoch_ShouldRestart",
 			fields: fields{
 				injectType:         errInjectTypeResponseError,

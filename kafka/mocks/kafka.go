@@ -111,7 +111,8 @@ func WithLogger(logger log.Logger) Option {
 // defaultConfig returns the default configuration
 func defaultConfig() *clusterConfig {
 	return &clusterConfig{
-		kafkaVersion:      "7.5.0",
+		//kafkaVersion:      "7.5.0",
+		kafkaVersion:      "8.2.2",
 		nodeCount:         1,
 		proxyEnabled:      false,
 		proxyAddr:         "127.0.0.1:19093",
